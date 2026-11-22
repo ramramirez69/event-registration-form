@@ -125,7 +125,7 @@ kbd { font-family: var(--ui); font-weight: 700; font-size: 12px; color: var(--gi
         <div class="crest"><img class="logo" alt="Legacy Martial Arts"></div>
         <h2>Dojo Defense</h2>
         <p>The dead are walking onto the mat. Punch and kick them back out, earn your belts, and unlock the weapons wall.</p>
-        <div class="unlocks"><span>Lv 2 · Nunchucks</span><span>Lv 3 · Bo staff</span><span>Lv 4 · Katana</span></div>
+        <div class="unlocks"><span>Lv 2 · Nunchucks</span><span>Lv 3 · Bo staff</span><span>Lv 4 · Katana</span><span>Boss every 5 waves</span></div>
         <button class="btn" id="startBtn" type="button">Bow in</button>
         <div class="best" id="bestTitle"></div>
       </div>
@@ -239,6 +239,9 @@ const sfx = {
   level: () => [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.18, "square", 0.05, 0, i * 0.09)),
   wave: () => { tone(220, 0.25, "triangle", 0.07); tone(330, 0.35, "triangle", 0.07, 0, 0.18); },
   groan: () => tone(rand(70, 95), 0.6, "sawtooth", 0.025, -20),
+  roar: () => { tone(80, 0.9, "sawtooth", 0.09, -40); tone(120, 0.7, "square", 0.04, -60); noise(0.6, 0.08, 300); },
+  slam: () => { noise(0.4, 0.4, 150); tone(55, 0.5, "sine", 0.2, -25); },
+  victory: () => [392, 523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, 0.22, "square", 0.05, 0, i * 0.1)),
 };
 
 /* ---------- data ---------- */
@@ -263,8 +266,11 @@ const ZT = {
   walker: { hp: 30,  spd: 42, dmg: 8,  xp: 15, pts: 100, scale: 1.0,  skin: "#88aa72", shirt: "#56617a", pants: "#4a3b30", wind: 0.45 },
   runner: { hp: 20,  spd: 98, dmg: 6,  xp: 20, pts: 150, scale: 0.92, skin: "#a6b46c", shirt: "#8a3f3a", pants: "#2f3a4a", wind: 0.35 },
   karate: { hp: 55,  spd: 62, dmg: 12, xp: 35, pts: 250, scale: 1.0,  skin: "#7c9e78", shirt: "#c9c2b6", pants: "#c9c2b6", wind: 0.4, gi: true },
+  boss:   { hp: 900, spd: 52, dmg: 22, xp: 300, pts: 5000, scale: 1.9, skin: "#5f7f55", shirt: "#1d1a1b", pants: "#1d1a1b", wind: 0.7, gi: true, boss: true },
   brute:  { hp: 120, spd: 30, dmg: 18, xp: 60, pts: 400, scale: 1.38, skin: "#6b8c5e", shirt: "#393939", pants: "#3b2e24", wind: 0.65 },
 };
+
+const BOSS_NAMES = ["Sensei Rot", "Grandmaster Grave", "The Hollow Shogun", "Old Master Marrow"];
 
 /* ---------- background ---------- */
 const bg = document.createElement("canvas");
@@ -532,6 +538,13 @@ function drawZombie(z, now) {
   if (z.dead) alpha = Math.max(0, 1 - z.deathT / 1.0);
   g.globalAlpha = alpha;
   g.fillStyle = "rgba(60,0,0,.35)"; g.beginPath(); g.ellipse(0, 2, 26 * s, 7 * s, 0, 0, Math.PI * 2); g.fill();
+  if (t.boss && !z.dead) {
+    const pulse = 0.5 + 0.5 * Math.sin(now * (z.enraged ? 10 : 4));
+    const ag = g.createRadialGradient(0, -80 * s, 10, 0, -80 * s, 120 * s);
+    ag.addColorStop(0, z.enraged ? "rgba(255,40,30," + (0.35 + pulse * 0.25) + ")" : "rgba(120,255,120," + (0.12 + pulse * 0.1) + ")");
+    ag.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = ag; g.beginPath(); g.arc(0, -80 * s, 120 * s, 0, Math.PI * 2); g.fill();
+  }
   g.scale(s * z.face, s);
   if (z.dead) { g.rotate(-Math.min(1, z.deathT * 3) * 1.45); g.translate(0, Math.min(1, z.deathT * 3) * 10); }
   const ph = Math.sin(z.walkT * (z.type === "runner" ? 13 : 6));
@@ -539,7 +552,12 @@ function drawZombie(z, now) {
   let lf = [-10 + ph * 9, 0], rf = [12 - ph * 9, 0];
   let lh = [34, -80 + ph * 3], rh = [40, -86 - ph * 3];
   let lean = 8;
-  if (z.windup > 0) {
+  if (z.mode === "charge-tell" || z.mode === "slam-tell" || z.mode === "summon") {
+    const k = z.mode === "summon" ? 1 : 1 - z.modeT / z.tellDur;
+    lh = [10, -110 - k * 18]; rh = [18, -116 - k * 18]; lean = -6;
+  } else if (z.mode === "charge") {
+    lh = [50, -66]; rh = [56, -72]; lean = 20;
+  } else if (z.windup > 0) {
     const k = 1 - z.windup / t.wind;
     lh = [20 - k * 10, -100 - k * 14]; rh = [26 - k * 10, -106 - k * 14]; lean = -4;
   } else if (z.lunge > 0) { lh = [48, -70]; rh = [54, -76]; lean = 16; }
@@ -558,7 +576,12 @@ function drawZombie(z, now) {
   g.closePath(); g.fill(); g.stroke();
   if (!flash) {
     g.fillStyle = "rgba(120,20,20,.55)"; g.beginPath(); g.ellipse(sh[0] + 4, sh[1] + 18, 5, 3, 0.4, 0, Math.PI * 2); g.fill();
-    if (t.gi) { g.fillStyle = "#3a3a3a"; g.fillRect(hip[0] - 14, hip[1] - 3, 28, 6); }
+    if (t.gi) { g.fillStyle = t.boss ? "#0b0b0b" : "#3a3a3a"; g.fillRect(hip[0] - 14, hip[1] - 3, 28, 6); }
+    if (t.boss) {
+      g.strokeStyle = "#c9a54a"; g.lineWidth = 1; g.strokeRect(hip[0] - 14, hip[1] - 3, 28, 6);
+      g.fillStyle = "#0b0b0b"; g.beginPath(); g.moveTo(hip[0] + 2, hip[1] + 2); g.lineTo(hip[0] - 4, hip[1] + 18); g.lineTo(hip[0] + 3, hip[1] + 18); g.closePath(); g.fill();
+      g.strokeStyle = "#3a3436"; g.lineWidth = 1.5; g.beginPath(); g.moveTo(sh[0] - 6, sh[1]); g.lineTo(sh[0] + 6, sh[1] + 20); g.lineTo(hip[0] + 12, hip[1] - 6); g.stroke();
+    }
   }
   // head
   const hx = sh[0] + 5, hy = sh[1] - 13;
@@ -570,16 +593,46 @@ function drawZombie(z, now) {
     g.beginPath(); g.arc(hx + 5, hy - 1, 2.2, 0, Math.PI * 2); g.fill(); g.shadowBlur = 0;
     g.fillStyle = "#2a1414"; g.fillRect(hx + 2, hy + 4, 8, 3);
     g.fillStyle = "#e9e2c9"; g.fillRect(hx + 3, hy + 4, 2, 1.5); g.fillRect(hx + 7, hy + 4, 2, 1.5);
+    if (t.boss) {
+      g.fillStyle = "#d9d4c7";
+      g.beginPath(); g.moveTo(hx - 3, hy + 6); g.lineTo(hx + 11, hy + 5); g.quadraticCurveTo(hx + 8, hy + 20, hx + 1, hy + 30 + Math.sin(now * 3) * 2); g.closePath(); g.fill();
+      g.fillStyle = "#cfc9bb"; g.beginPath(); g.arc(hx - 5, hy - 13, 4.5, 0, Math.PI * 2); g.fill();
+      g.fillStyle = "#b3241f"; g.fillRect(hx - 11, hy - 7, 22, 3.5);
+      g.beginPath(); g.moveTo(hx - 11, hy - 6); g.lineTo(hx - 22, hy - 1 + Math.sin(now * 7) * 3); g.lineTo(hx - 20, hy + 3 + Math.sin(now * 7) * 3); g.closePath(); g.fill();
+    }
   }
   limb(g, sh[0] + 6, sh[1] + 2, rh[0], rh[1], 4, 8, skin, OUT);
   g.fillStyle = skin; g.beginPath(); g.arc(rh[0], rh[1], 4.5, 0, Math.PI * 2); g.fill();
   g.restore();
   // hp bar
-  if (!z.dead && z.hp < z.maxHp) {
+  if (!z.dead && !t.boss && z.hp < z.maxHp) {
     const bw = 34 * s, top = z.y - 122 * s;
     ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(z.x - bw / 2 - 1, top - 1, bw + 2, 5);
     ctx.fillStyle = "#7fd36b"; ctx.fillRect(z.x - bw / 2, top, bw * Math.max(0, z.hp / z.maxHp), 3);
   }
+}
+
+function drawTelegraph(z, now) {
+  const g = ctx, flick = 0.5 + 0.5 * Math.sin(now * 30);
+  if (z.mode === "charge-tell") {
+    const k = 1 - z.modeT / z.tellDur;
+    const x0 = z.x, x1 = z.face > 0 ? W : 0;
+    g.fillStyle = "rgba(255,40,30," + (0.18 + 0.2 * flick) + ")";
+    g.fillRect(Math.min(x0, x1), z.y - 24, Math.abs(x1 - x0), 34);
+    g.fillStyle = "rgba(255,230,120,.9)";
+    g.fillRect(Math.min(x0, x0 + (x1 - x0) * k), z.y - 9, Math.abs(x1 - x0) * k, 4);
+  } else if (z.mode === "slam-tell") {
+    const k = 1 - z.modeT / z.tellDur;
+    g.strokeStyle = "rgba(255,40,30," + (0.5 + 0.4 * flick) + ")"; g.lineWidth = 3;
+    g.beginPath(); g.ellipse(z.x, z.y, SLAM_R, SLAM_R / 2.2, 0, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = "rgba(255,40,30,.28)";
+    g.beginPath(); g.ellipse(z.x, z.y, SLAM_R * k, SLAM_R * k / 2.2, 0, 0, Math.PI * 2); g.fill();
+  }
+}
+function drawRing(r) {
+  const g = ctx, k = r.t / 0.45;
+  g.strokeStyle = "rgba(255,220,150," + (1 - k) + ")"; g.lineWidth = 6 * (1 - k) + 1;
+  g.beginPath(); g.ellipse(r.x, r.y, SLAM_R * (0.3 + k), SLAM_R * (0.3 + k) / 2.2, 0, 0, Math.PI * 2); g.stroke();
 }
 
 function drawPickup(pk, now) {
@@ -597,15 +650,16 @@ function drawPickup(pk, now) {
 
 /* ---------- game state ---------- */
 let state = "title";
-let P, zombies, pickups, parts, texts, banners, G;
+let P, zombies, pickups, parts, texts, banners, rings, G;
+const SLAM_R = 175;
 const keys = new Set();
 let buffer = null;
 let shake = 0, hitstop = 0;
 
 function reset() {
   P = { x: W / 2, y: 440, face: 1, hp: 100, maxHp: 100, level: 1, xp: 0, weapon: -1, atk: null, inv: 0, hurtT: 0, walkT: 0, moving: false };
-  zombies = []; pickups = []; parts = []; texts = []; banners = [];
-  G = { wave: 0, toSpawn: 0, spawnT: 0, breakT: 1.2, kills: 0, score: 0, groanT: 3 };
+  zombies = []; pickups = []; parts = []; texts = []; banners = []; rings = [];
+  G = { wave: 0, toSpawn: 0, spawnT: 0, breakT: 1.2, kills: 0, score: 0, groanT: 3, bosses: 0 };
   buffer = null; shake = 0; hitstop = 0;
 }
 
@@ -613,33 +667,99 @@ function unlocked() { return WEAPONS.map((w, i) => i).filter(i => P.level >= WEA
 
 function startWave() {
   G.wave++;
-  G.toSpawn = 5 + G.wave * 3;
   G.spawnT = 0.6;
-  banners.push({ text: "WAVE " + G.wave, sub: G.wave === 1 ? "Hold the mat" : waveSub(), t: 0, dur: 2.2 });
-  sfx.wave();
+  if (G.wave % 5 === 0) {
+    const n = G.wave / 5;
+    G.toSpawn = 2 + n * 2;
+    const name = BOSS_NAMES[(n - 1) % BOSS_NAMES.length];
+    const hp = ZT.boss.hp * (1 + (n - 1) * 0.6);
+    zombies.push(makeZombie("boss", W + 70, (FY0 + FY1) / 2, { hp, maxHp: hp, name, spd: ZT.boss.spd * (1 + (n - 1) * 0.08), mode: "walk", modeT: 0, skillT: 3, tellDur: 1, boss: true }));
+    banners.push({ text: "BOSS WAVE", sub: name + " has entered the dojo", t: 0, dur: 3, boss: true });
+    sfx.roar(); shake = 10;
+  } else {
+    G.toSpawn = 5 + G.wave * 3;
+    banners.push({ text: "WAVE " + G.wave, sub: G.wave === 1 ? "Hold the mat" : waveSub(), t: 0, dur: 2.2 });
+    sfx.wave();
+  }
 }
 function waveSub() {
   if (G.wave === 2) return "Runners incoming";
   if (G.wave === 3) return "A brute shambles in";
-  if (G.wave === 5) return "Former students. Show no mercy.";
+  if (G.wave === 6) return "Former students. Show no mercy.";
+  if (G.wave % 5 === 4) return "Something big is coming next wave";
   return ["They keep coming", "Stay in your stance", "Guard the lockers", "Kiai!"][G.wave % 4];
 }
 function pickType() {
   const w = G.wave, r = Math.random();
   if (w >= 3 && r < Math.min(0.22, 0.08 + w * 0.02)) return "brute";
-  if (w >= 5 && r < 0.42) return "karate";
+  if (w >= 6 && r < 0.42) return "karate";
   if (w >= 2 && r < 0.62) return "runner";
   return "walker";
 }
-function spawnZombie() {
-  const type = pickType(), t = ZT[type];
-  const side = Math.random() < 0.5 ? -1 : 1;
-  const hpScale = 1 + (G.wave - 1) * 0.09;
-  zombies.push({
-    type, x: side < 0 ? -40 : W + 40, y: rand(FY0 + 6, FY1 - 4), face: -side,
+function makeZombie(type, x, y, extra) {
+  const t = ZT[type], hpScale = 1 + (G.wave - 1) * 0.09;
+  return Object.assign({
+    type, x, y, face: x < W / 2 ? 1 : -1,
     hp: t.hp * hpScale, maxHp: t.hp * hpScale, spd: t.spd * rand(0.85, 1.15) * (1 + G.wave * 0.02),
     vx: 0, flash: 0, stun: 0, windup: 0, lunge: 0, atkCd: rand(0.3, 1), walkT: rand(0, 10), dead: false, deathT: 0,
-  });
+  }, extra || {});
+}
+function spawnZombie() {
+  const side = Math.random() < 0.5 ? -1 : 1;
+  zombies.push(makeZombie(G.wave % 5 === 0 ? "walker" : pickType(), side < 0 ? -40 : W + 40, rand(FY0 + 6, FY1 - 4)));
+}
+
+/* Boss move set: lane charge, ground slam, summon. Returns true when it took over this frame. */
+function bossAI(z, dt) {
+  const enr = z.hp < z.maxHp * 0.5;
+  if (enr && !z.enraged) { z.enraged = true; banners.push({ text: "ENRAGED", sub: z.name + " is furious", t: 0, dur: 1.8, boss: true }); sfx.roar(); }
+  const tell = enr ? 0.65 : 0.95;
+  const cd = () => enr ? rand(1.8, 2.8) : rand(3.2, 4.6);
+  if (z.mode === "charge-tell") {
+    z.modeT -= dt;
+    if (z.modeT <= 0) { z.mode = "charge"; z.hitP = false; sfx.whoosh(); }
+    return true;
+  }
+  if (z.mode === "charge") {
+    z.x += z.face * 600 * dt; z.walkT += dt * 2;
+    if (!z.hitP && Math.abs(P.x - z.x) < 60 && Math.abs(P.y - z.y) < 30) { z.hitP = true; hurtPlayer(ZT.boss.dmg + 6, z.x - z.face * 200); }
+    if (z.x < 60 || z.x > W - 60) { z.x = clamp(z.x, 60, W - 60); z.mode = "walk"; z.skillT = cd(); z.stun = 0.6; shake = 10; sfx.hit(); burst(z.x + z.face * 30, z.y - 60, 16, ["#fff", "#c9c2b6"], 260); }
+    return true;
+  }
+  if (z.mode === "slam-tell") {
+    z.modeT -= dt;
+    if (z.modeT <= 0) {
+      if (Math.hypot(P.x - z.x, (P.y - z.y) * 2.2) < SLAM_R) hurtPlayer(ZT.boss.dmg, z.x);
+      rings.push({ x: z.x, y: z.y, t: 0 }); shake = 16; sfx.slam();
+      burst(z.x, z.y - 4, 24, ["#8f1f1b", "#1a1515", "#fff"], 320);
+      z.mode = "walk"; z.skillT = cd();
+    }
+    return true;
+  }
+  if (z.mode === "summon") {
+    z.modeT -= dt;
+    if (z.modeT <= 0) {
+      const n = enr ? 3 : 2;
+      for (let i = 0; i < n; i++) {
+        const side = i % 2 ? -1 : 1;
+        zombies.push(makeZombie(Math.random() < 0.5 ? "runner" : "walker", side < 0 ? -40 : W + 40, rand(FY0 + 6, FY1 - 4)));
+      }
+      popText(z.x, z.y - 200, "RISE, STUDENTS!", "#7fd36b", true);
+      z.mode = "walk"; z.skillT = cd();
+    }
+    return true;
+  }
+  z.skillT -= dt;
+  if (z.skillT <= 0 && z.windup <= 0 && z.x > 40 && z.x < W - 40) {
+    const dx = P.x - z.x, minions = zombies.filter(o => !o.dead && !o.boss).length, r = Math.random();
+    z.face = dx >= 0 ? 1 : -1;
+    if (Math.abs(dx) > 200 && r < 0.65) { z.mode = "charge-tell"; z.y = lerp(z.y, P.y, 0.6); }
+    else if (minions < 3 && r < 0.85) { z.mode = "summon"; sfx.roar(); }
+    else z.mode = "slam-tell";
+    z.tellDur = z.mode === "summon" ? 0.8 : tell; z.modeT = z.tellDur;
+    return true;
+  }
+  return false;
 }
 
 function addXP(n) {
@@ -702,8 +822,9 @@ function resolveHit() {
     const dmg = Math.round(d.dmg * power * rand(0.9, 1.1));
     z.hp -= dmg; z.flash = 0.1;
     const dir = Math.sign(z.x - P.x) || P.face;
-    const kbm = z.type === "brute" ? 0.4 : 1;
-    z.vx = dir * d.kb * kbm; z.stun = z.type === "brute" ? 0.12 : 0.3; z.windup = 0;
+    const kbm = z.boss ? 0.08 : z.type === "brute" ? 0.4 : 1;
+    z.vx = dir * d.kb * kbm;
+    if (!z.boss) { z.stun = z.type === "brute" ? 0.12 : 0.3; z.windup = 0; }
     const hy = z.y - 70 * depthScale(z.y);
     burst(z.x - dir * 10, hy, 8, ["#fff", "#ffd34d", "#7fd36b"], 200);
     popText(z.x, hy - 30, String(dmg), a.type === "weapon" ? "#ffd34d" : "#ffffff");
@@ -714,7 +835,14 @@ function resolveHit() {
       popText(z.x, hy - 52, "+" + t.xp + " XP", "#8fd0ff");
       burst(z.x, hy, 14, ["#5e7f4e", "#3c2c22", "#9cbf7a"], 220);
       sfx.die();
-      if (Math.random() < 0.09 || (z.type === "brute" && Math.random() < 0.6)) pickups.push({ x: z.x, y: z.y, t: 0 });
+      if (z.boss) {
+        G.bosses++; G.score += 2000 * G.bosses;
+        banners.push({ text: "BOSS DEFEATED", sub: z.name + " bows out · +" + t.xp + " XP", t: 0, dur: 3.2, gold: true });
+        P.hp = Math.min(P.maxHp, P.hp + 40);
+        pickups.push({ x: z.x - 30, y: z.y, t: 0 }, { x: z.x + 30, y: z.y, t: 0 });
+        burst(z.x, hy, 60, ["#ffd34d", "#fff", "#d6322b", "#5f7f55"], 420);
+        shake = 18; sfx.victory();
+      } else if (Math.random() < 0.09 || (z.type === "brute" && Math.random() < 0.6)) pickups.push({ x: z.x, y: z.y, t: 0 });
       addXP(t.xp);
     }
   }
@@ -784,6 +912,7 @@ function update(dt, now) {
     z.flash -= dt; z.stun -= dt; z.atkCd -= dt; z.lunge = Math.max(0, z.lunge - dt);
     z.x += z.vx * dt; z.vx *= Math.exp(-9 * dt);
     if (z.stun > 0) continue;
+    if (z.boss && bossAI(z, dt)) { z.y = clamp(z.y, FY0 + 2, FY1); continue; }
     const dx = P.x - z.x, dy = P.y - z.y;
     if (z.windup > 0) {
       z.windup -= dt;
@@ -824,6 +953,8 @@ function update(dt, now) {
   parts = parts.filter(p => p.t < p.life);
   for (const t of texts) t.t += dt;
   texts = texts.filter(t => t.t < 0.9);
+  for (const r of rings) r.t += dt;
+  rings = rings.filter(r => r.t < 0.45);
   for (const b of banners) b.t += dt;
   banners = banners.filter(b => b.t < b.dur);
   shake = Math.max(0, shake - dt * 30);
@@ -868,7 +999,8 @@ function drawHUD(now) {
   // wave/center
   g.textAlign = "center";
   g.fillStyle = "rgba(18,14,15,.78)"; rr(g, W / 2 - 90, 10, 180, 44, 8); g.fill();
-  g.fillStyle = "#ece6e4"; g.font = "18px Bungee, Impact, sans-serif"; g.fillText("WAVE " + Math.max(1, G.wave), W / 2, 27);
+  g.fillStyle = G.wave % 5 === 0 && G.wave ? "#ff6b5e" : "#ece6e4"; g.font = "18px Bungee, Impact, sans-serif";
+  g.fillText((G.wave % 5 === 0 && G.wave ? "BOSS " : "WAVE ") + Math.max(1, G.wave), W / 2, 27);
   const left = G.toSpawn + zombies.filter(z => !z.dead).length;
   g.font = "600 11px 'Chakra Petch', sans-serif"; g.fillStyle = "#a99d9b";
   g.fillText(left ? left + " ZOMBIES LEFT" : "CLEAR · NEXT WAVE SOON", W / 2, 44);
@@ -879,6 +1011,20 @@ function drawHUD(now) {
   g.fillStyle = "#a99d9b"; g.font = "600 11px 'Chakra Petch', sans-serif"; g.fillText("SCORE", W - 24, 22);
   g.fillStyle = "#ece6e4"; g.font = "18px Bungee, Impact, sans-serif"; g.fillText(String(G.score).padStart(6, "0"), W - 24, 40);
 
+  // boss health bar
+  const boss = zombies.find(z => z.boss && !z.dead);
+  if (boss) {
+    const bw = 520, bx = W / 2 - bw / 2, by = H - 50;
+    g.fillStyle = "rgba(18,14,15,.82)"; rr(g, bx - 12, by - 22, bw + 24, 48, 8); g.fill();
+    g.textAlign = "left"; g.font = "14px Bungee, Impact, sans-serif"; g.fillStyle = boss.enraged ? "#ff6b5e" : "#ece6e4";
+    g.fillText(boss.name.toUpperCase() + (boss.enraged ? " · ENRAGED" : ""), bx, by - 8);
+    g.textAlign = "right"; g.font = "700 11px 'Chakra Petch', sans-serif"; g.fillStyle = "#a99d9b";
+    g.fillText("BOSS · BLACK BELT", bx + bw, by - 8);
+    g.fillStyle = "#3a2e2f"; rr(g, bx, by + 2, bw, 14, 4); g.fill();
+    g.fillStyle = boss.enraged && Math.floor(now * 8) % 2 ? "#ff5a4f" : "#b3241f";
+    rr(g, bx, by + 2, Math.max(6, bw * boss.hp / boss.maxHp), 14, 4); g.fill();
+    g.strokeStyle = "rgba(255,255,255,.35)"; g.lineWidth = 1; g.beginPath(); g.moveTo(bx + bw / 2, by + 2); g.lineTo(bx + bw / 2, by + 16); g.stroke();
+  }
   // weapon rack
   const slots = [{ name: "FISTS", lvl: 1, key: "J/K" }].concat(WEAPONS.map((w, i) => ({ name: w.name.toUpperCase(), lvl: w.lvl, key: String(i + 1), w })));
   const sx = W - 12 - slots.length * 78 + 6, sy = 82;
@@ -910,6 +1056,8 @@ function render(now) {
   if (shake > 0) g.translate(rand(-shake, shake), rand(-shake, shake));
   g.drawImage(bg, 0, 0, W, H);
   if (state !== "title") {
+    zombies.forEach(z => { if (z.boss && !z.dead) drawTelegraph(z, now); });
+    rings.forEach(drawRing);
     const ents = [];
     pickups.forEach(p => ents.push({ y: p.y - 0.5, d: () => drawPickup(p, now) }));
     zombies.forEach(z => ents.push({ y: z.y, d: () => drawZombie(z, now) }));
@@ -941,7 +1089,7 @@ function render(now) {
       g.save(); g.globalAlpha = a; g.textAlign = "center"; g.textBaseline = "middle";
       const y = 210 - (1 - Math.min(1, k / 0.12)) * 20;
       g.fillStyle = "rgba(18,14,15,.7)"; g.fillRect(0, y - 44, W, 92);
-      g.fillStyle = b.gold ? "#ffd34d" : "#ffffff"; g.font = "52px Bungee, Impact, sans-serif";
+      g.fillStyle = b.gold ? "#ffd34d" : b.boss ? "#ff6b5e" : "#ffffff"; g.font = "52px Bungee, Impact, sans-serif";
       g.lineWidth = 6; g.strokeStyle = "#8f1f1b"; g.strokeText(b.text, W / 2, y - 6); g.fillText(b.text, W / 2, y - 6);
       g.font = "700 18px 'Chakra Petch', sans-serif"; g.fillStyle = "#ece6e4"; g.fillText(b.sub, W / 2, y + 32);
       g.restore();
@@ -969,7 +1117,7 @@ function gameOver() {
   state = "over";
   if (G.score > best) { best = G.score; saveBest(best); }
   $("sWave").textContent = G.wave; $("sKills").textContent = G.kills; $("sScore").textContent = G.score;
-  $("overMsg").textContent = "You reached the " + BELTS[P.level].name.toLowerCase() + " belt and held Legacy Martial Arts for " + G.wave + (G.wave === 1 ? " wave." : " waves.");
+  $("overMsg").textContent = "You reached the " + BELTS[P.level].name.toLowerCase() + " belt and held Legacy Martial Arts for " + G.wave + (G.wave === 1 ? " wave" : " waves") + (G.bosses ? ", defeating " + G.bosses + (G.bosses === 1 ? " boss." : " bosses.") : ".");
   $("bestOver").textContent = "Best score: " + best;
   show("overOv", true);
   $("againBtn").focus();
